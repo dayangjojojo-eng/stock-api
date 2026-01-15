@@ -1,14 +1,15 @@
+const http = require('http');
 const https = require('https');
 
-const LICENCE = '82556EEC-5CB3-4BD2-9BBD-9C26A0ED5A97';
-
-// 50只热门A股（精选高交易量股票）
+// 50只热门A股
 const HOT_STOCKS = [
-    '600519','000858','300750','002594','000333','000651','600036','601318','000725','002415',
-    '600000','601398','601988','600030','000001','600276','600887','000568','002304','600900',
-    '601012','600309','601899','600031','002475','601166','000063','002352','603288','600809',
-    '300059','002230','000538','600196','601668','601390','600048','600011','601985','600585',
-    '000423','002460','600219','601100','000630','002466','600426','601688','601601','601328'
+    'sh600519','sz000858','sz300750','sz002594','sz000333','sz000651','sh600036','sh601318',
+    'sz000725','sz002415','sh600000','sh601398','sh601988','sh600030','sz000001','sh600276',
+    'sh600887','sz000568','sz002304','sh600900','sh601012','sh600309','sh601899','sh600031',
+    'sz002475','sh601166','sz000063','sz002352','sh603288','sh600809','sz300059','sz002230',
+    'sz000538','sh600196','sh601668','sh601390','sh600048','sh600011','sh601985','sh600585',
+    'sz000423','sz002460','sh600219','sh601100','sz000630','sz002466','sh600426','sh601688',
+    'sh601601','sh601328'
 ];
 
 module.exports = async (req, res) => {
@@ -17,14 +18,31 @@ module.exports = async (req, res) => {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
-        // 一次性并发获取所有股票
-        const results = await Promise.allSettled(
-            HOT_STOCKS.map(code => fetchStock(code))
-        );
+        // 使用新浪财经API获取实时数据
+        const codes = HOT_STOCKS.join(',');
+        const data = await fetchSinaData(codes);
         
-        const stocks = results
-            .filter(r => r.status === 'fulfilled' && r.value !== null)
-            .map(r => r.value);
+        const stocks = [];
+        for (const code of HOT_STOCKS) {
+            const info = data[code];
+            if (info && info.price > 0) {
+                stocks.push({
+                    code: code.substring(2),
+                    name: info.name,
+                    price: info.price,
+                    change: info.change,
+                    pe: 0,
+                    pb: 0,
+                    roe: 0,
+                    volume: info.volume,
+                    amount: info.amount,
+                    high: info.high,
+                    low: info.low,
+                    open: info.open,
+                    industry: 'other'
+                });
+            }
+        }
 
         // 按成交量排序
         stocks.sort((a, b) => b.volume - a.volume);
@@ -40,61 +58,49 @@ module.exports = async (req, res) => {
     }
 };
 
-async function fetchStock(code) {
-    try {
-        const d = await fetchAPI(`https://api.mairui.club/hsrl/ssjy/${code}/${LICENCE}`);
-        if (d && d.p) {
-            return {
-                code: code,
-                name: d.mc || code,
-                price: parseFloat(d.p) || 0,
-                change: parseFloat(d.pc) || 0,
-                pe: parseFloat(d.pe) || 0,
-                pb: parseFloat(d.sjl) || 0,
-                roe: 0,
-                volume: parseFloat(d.v) || 0,
-                amount: parseFloat(d.cje) || 0,
-                turnover: parseFloat(d.hs) || 0,
-                high: parseFloat(d.h) || 0,
-                low: parseFloat(d.l) || 0,
-                open: parseFloat(d.o) || 0,
-                industry: getIndustry(code)
-            };
-        }
-    } catch (e) { }
-    return null;
-}
-
-function fetchAPI(url) {
+function fetchSinaData(codes) {
     return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => resolve(null), 3000);
-        https.get(url, (resp) => {
+        const url = `http://hq.sinajs.cn/list=${codes}`;
+        http.get(url, {
+            headers: {
+                'Referer': 'http://finance.sina.com.cn',
+                'User-Agent': 'Mozilla/5.0'
+            }
+        }, (resp) => {
             let data = '';
             resp.on('data', chunk => data += chunk);
             resp.on('end', () => {
-                clearTimeout(timeout);
-                try { resolve(JSON.parse(data)); }
-                catch (e) { resolve(null); }
+                try {
+                    const result = {};
+                    const lines = data.split('\n');
+                    for (const line of lines) {
+                        if (!line.includes('=')) continue;
+                        const match = line.match(/hq_str_(\w+)="(.*)"/);
+                        if (match) {
+                            const code = match[1];
+                            const values = match[2].split(',');
+                            if (values.length > 30) {
+                                const yclose = parseFloat(values[2]) || 0;
+                                const price = parseFloat(values[3]) || 0;
+                                result[code] = {
+                                    name: values[0],
+                                    open: parseFloat(values[1]) || 0,
+                                    yclose: yclose,
+                                    price: price,
+                                    high: parseFloat(values[4]) || 0,
+                                    low: parseFloat(values[5]) || 0,
+                                    volume: parseFloat(values[8]) || 0,
+                                    amount: parseFloat(values[9]) || 0,
+                                    change: yclose > 0 ? ((price - yclose) / yclose * 100).toFixed(2) : 0
+                                };
+                            }
+                        }
+                    }
+                    resolve(result);
+                } catch (e) {
+                    reject(e);
+                }
             });
-        }).on('error', () => {
-            clearTimeout(timeout);
-            resolve(null);
-        });
+        }).on('error', reject);
     });
-}
-
-function getIndustry(code) {
-    const ind = {
-        '600036':'finance','601318':'finance','600000':'finance','601398':'finance','601988':'finance',
-        '601166':'finance','000001':'finance','600030':'finance','601688':'finance','601601':'finance',
-        '600519':'consumer','000858':'consumer','000333':'consumer','000651':'consumer','600887':'consumer',
-        '000568':'consumer','002304':'consumer','603288':'consumer','600809':'consumer',
-        '300750':'tech','002594':'tech','002415':'tech','000725':'tech','300059':'tech',
-        '002230':'tech','002475':'tech','000063':'tech',
-        '600276':'healthcare','000538':'healthcare','600196':'healthcare',
-        '600900':'energy','601012':'energy','600011':'energy','601985':'energy',
-        '600309':'material','601899':'material','600585':'material','000423':'material',
-        '600031':'industrial','601668':'industrial','601390':'industrial','600048':'industrial','002352':'industrial'
-    };
-    return ind[code] || 'other';
 }
