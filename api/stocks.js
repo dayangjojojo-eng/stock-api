@@ -1,5 +1,4 @@
 const http = require('http');
-const https = require('https');
 
 // 50只热门A股
 const HOT_STOCKS = [
@@ -12,13 +11,29 @@ const HOT_STOCKS = [
     'sh601601','sh601328'
 ];
 
+// 股票名称映射
+const STOCK_NAMES = {
+    '600519':'贵州茅台','000858':'五粮液','300750':'宁德时代','002594':'比亚迪',
+    '000333':'美的集团','000651':'格力电器','600036':'招商银行','601318':'中国平安',
+    '000725':'京东方A','002415':'海康威视','600000':'浦发银行','601398':'工商银行',
+    '601988':'中国银行','600030':'中信证券','000001':'平安银行','600276':'恒瑞医药',
+    '600887':'伊利股份','000568':'泸州老窖','002304':'洋河股份','600900':'长江电力',
+    '601012':'隆基绿能','600309':'万华化学','601899':'紫金矿业','600031':'三一重工',
+    '002475':'立讯精密','601166':'兴业银行','000063':'中兴通讯','002352':'顺丰控股',
+    '603288':'海天味业','600809':'山西汾酒','300059':'东方财富','002230':'科大讯飞',
+    '000538':'云南白药','600196':'复星医药','601668':'中国建筑','601390':'中国中铁',
+    '600048':'保利发展','600011':'华能国际','601985':'中国核电','600585':'海螺水泥',
+    '000423':'东阿阿胶','002460':'赣锋锂业','600219':'南山铝业','601100':'恒立液压',
+    '000630':'铜陵有色','002466':'天齐锂业','600426':'华鲁恒升','601688':'华泰证券',
+    '601601':'中国太保','601328':'交通银行'
+};
+
 module.exports = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     try {
-        // 使用新浪财经API获取实时数据
         const codes = HOT_STOCKS.join(',');
         const data = await fetchSinaData(codes);
         
@@ -26,9 +41,10 @@ module.exports = async (req, res) => {
         for (const code of HOT_STOCKS) {
             const info = data[code];
             if (info && info.price > 0) {
+                const shortCode = code.substring(2);
                 stocks.push({
-                    code: code.substring(2),
-                    name: info.name,
+                    code: shortCode,
+                    name: STOCK_NAMES[shortCode] || shortCode,
                     price: info.price,
                     change: info.change,
                     pe: 0,
@@ -39,12 +55,11 @@ module.exports = async (req, res) => {
                     high: info.high,
                     low: info.low,
                     open: info.open,
-                    industry: 'other'
+                    industry: getIndustry(shortCode)
                 });
             }
         }
 
-        // 按成交量排序
         stocks.sort((a, b) => b.volume - a.volume);
 
         res.status(200).json({ 
@@ -62,15 +77,14 @@ function fetchSinaData(codes) {
     return new Promise((resolve, reject) => {
         const url = `http://hq.sinajs.cn/list=${codes}`;
         http.get(url, {
-            headers: {
-                'Referer': 'http://finance.sina.com.cn',
-                'User-Agent': 'Mozilla/5.0'
-            }
+            headers: { 'Referer': 'http://finance.sina.com.cn' }
         }, (resp) => {
-            let data = '';
-            resp.on('data', chunk => data += chunk);
+            const chunks = [];
+            resp.on('data', chunk => chunks.push(chunk));
             resp.on('end', () => {
                 try {
+                    const buffer = Buffer.concat(chunks);
+                    const data = buffer.toString('utf-8');
                     const result = {};
                     const lines = data.split('\n');
                     for (const line of lines) {
@@ -83,9 +97,7 @@ function fetchSinaData(codes) {
                                 const yclose = parseFloat(values[2]) || 0;
                                 const price = parseFloat(values[3]) || 0;
                                 result[code] = {
-                                    name: values[0],
                                     open: parseFloat(values[1]) || 0,
-                                    yclose: yclose,
                                     price: price,
                                     high: parseFloat(values[4]) || 0,
                                     low: parseFloat(values[5]) || 0,
@@ -97,10 +109,23 @@ function fetchSinaData(codes) {
                         }
                     }
                     resolve(result);
-                } catch (e) {
-                    reject(e);
-                }
+                } catch (e) { reject(e); }
             });
         }).on('error', reject);
     });
+}
+
+function getIndustry(code) {
+    const ind = {
+        '600036':'finance','601318':'finance','600000':'finance','601398':'finance','601988':'finance',
+        '601166':'finance','000001':'finance','600030':'finance','601688':'finance','601601':'finance','601328':'finance',
+        '600519':'consumer','000858':'consumer','000333':'consumer','000651':'consumer','600887':'consumer',
+        '000568':'consumer','002304':'consumer','603288':'consumer','600809':'consumer',
+        '300750':'tech','002594':'tech','002415':'tech','000725':'tech','300059':'tech','002230':'tech','002475':'tech','000063':'tech',
+        '600276':'healthcare','000538':'healthcare','600196':'healthcare',
+        '600900':'energy','601012':'energy','600011':'energy','601985':'energy',
+        '600309':'material','601899':'material','600585':'material','000423':'material','002460':'material','002466':'material','000630':'material','600219':'material','600426':'material',
+        '600031':'industrial','601668':'industrial','601390':'industrial','600048':'industrial','002352':'industrial','601100':'industrial'
+    };
+    return ind[code] || 'other';
 }
